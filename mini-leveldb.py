@@ -10,6 +10,7 @@ METADATA_SIZE = 1  # block
 def get_free_block_and_set():
       with open(db_file, "r+") as f:
             for x in range(9,13):
+                  offset = (x - 9) * 1024
                   data = read_block(f, x)
                   bitmap_binary = ''.join(format(int(c, 16), '04b') for c in data)
                   for i, bit in enumerate(bitmap_binary):
@@ -17,7 +18,7 @@ def get_free_block_and_set():
                               updated_bitmap_binary = bitmap_binary[:i] + '1' + bitmap_binary[i + 1:]
                               updated_bitmap_hex = hex(int(updated_bitmap_binary, 2))[2:].zfill(BLOCK_SIZE)
                               write_block(f, x, updated_bitmap_hex)
-                              return i
+                              return i + offset
 
 def read_block(f,  block_num):
       f.seek(BLOCK_SIZE * block_num)
@@ -43,7 +44,7 @@ def open_db(db_name: str):
                   # Initialize metadata
                   f.seek(0)
                   f.write(db_name.ljust(50)) # 0-49 db name
-                  f.write('0'.ljust(10)) # 50 - 59 total size
+                  f.write('1048576'.ljust(10)) # 50 - 59 total size
                   f.write('1'.ljust(10)) # 60 - 69 num of PFS file
                   f.write(str(BLOCK_SIZE).ljust(10)) # 70 - 79 block size
                   f.write('0') # 80 - 80 
@@ -53,6 +54,7 @@ def open_db(db_name: str):
 
 def put(myfile: str):
       with open(db_file, "r+") as f1:
+            fcb_block = 0
             # check if myfile exists
             for i in range(1,9):
                   data = read_block(f1, i)
@@ -62,15 +64,17 @@ def put(myfile: str):
                               return
                   else:
                         # insert new FCB
+                        fcb_block = i
                         f1.seek(i * BLOCK_SIZE)
                         f1.write(myfile.ljust(50))
                         f1.write(str(os.path.getsize(myfile)).ljust(10))
-                        f1.write(str(datetime.datetime.now())[:-7])
-                        print(str(datetime.datetime.now())[:-7])
+                        f1.write(str(datetime.datetime.now())[:-7].ljust(20))
                         break
 
             free_block = get_free_block_and_set()
+            f1.write(str(free_block).rjust(5,'0'))
             f1.seek(free_block * BLOCK_SIZE)
+            block_used = 1
             with open(myfile, "r", encoding="latin-1") as f2:
                   reader = csv.reader(f2, delimiter="\t")
                   next(reader, None)
@@ -84,8 +88,22 @@ def put(myfile: str):
                               # a block is full, update bitmap
                               cnt = 0
                               f1.write(''.ljust(BLOCK_SIZE - 240 - 5))
-                              f1.write('99999')
                               free_block = get_free_block_and_set()
+                              # print("got free block:", free_block)
+                              f1.write(str(free_block).rjust(5,'0'))
+                              block_used += 1
+                  # manage last block
+                  f1.write('99999'.rjust(256 - cnt * 40))
+            print("last free block:", free_block)
+            # update metadata, # of KV tables
+            f1.seek(80)
+            f1.write('1')
+            # update ending block and number of blocks used
+            f1.seek(fcb_block*BLOCK_SIZE+85)
+            f1.write(str(free_block).rjust(5,'0'))
+            print("block used:", block_used)
+            f1.write(str(block_used).rjust(5,'0'))
+            
 
 def run():
      while True:
