@@ -1,6 +1,7 @@
 import os
 import csv
 import datetime
+import glob
 
 BLOCK_SIZE = 256  # bytes
 INITIAL_SIZE = 1024 * 1024  # 1 MByte
@@ -20,10 +21,18 @@ def get_free_block_and_set():
                               write_block(f, x, updated_bitmap_hex)
                               return i + offset
 
+def mark_block_free(block_num):
+      with open(db_file, "r+") as f:
+            data = ''.join([read_block(f, i) for i in range(9, 13)])
+            bitmap_binary = ''.join(format(int(c, 16), '04b') for c in data)
+            updated_bitmap_binary = bitmap_binary[:block_num] + '0' + bitmap_binary[block_num + 1:]
+            updated_bitmap_hex = hex(int(updated_bitmap_binary, 2))[2:].zfill(BLOCK_SIZE)
+            write_block(f, 9, updated_bitmap_hex)
+
 def read_block(f,  block_num):
       f.seek(BLOCK_SIZE * block_num)
       data = f.read(BLOCK_SIZE)
-      print(f'read block {block_num} of len({len(data)}): {data}')
+      # print(f'read block {block_num} of len({len(data)}): {data}')
       return data
 
 def write_block(f, block_num, block_content):
@@ -33,6 +42,21 @@ def write_block(f, block_num, block_content):
 def remove_two_byte_characters(input_string: str):
     return ''.join(char for char in input_string if len(char.encode('utf-8')) <= 1).ljust(40)[:40]
 
+def write_data_block_to_csv(f, data: str):
+      rows = [data[i*40:(i+1)*40] for i in range(6)]
+      for row in rows:
+            if row[0] == ' ': continue
+            key, value = row.split(',',1)
+            f.writerow([key, value])
+
+def get_fcb_block_num(f, myfile):
+      for i in range(1,9):
+            data = read_block(f, i)
+            if data[0] != ' ':
+                  filename = data[:50].strip()
+                  if filename == myfile:
+                        return i
+      return -1
 
 def open_db(db_name: str):
       global db_file
@@ -121,27 +145,45 @@ def dir():
 
 def get(myfile: str):
       with open(db_file, "r") as f:
-            fcb_block_num = 0
             # check if myfile exists
-            for i in range(1,9):
-                  data = read_block(f, i)
-                  if data[0] != ' ':
-                        filename = data[:50].strip()
-                        if filename == myfile:
-                              fcb_block_num = i
-                              break
-            
+            fcb_block_num = get_fcb_block_num(f, myfile)
             fcb_block_data = read_block(f, fcb_block_num)
             starting_block = fcb_block_data[80:85]
-            ending_block = fcb_block_data[85:90]
-            print(starting_block, ending_block)
             cur_block = starting_block
+            with open("get-"+myfile, "w") as f2:
+                  writer = csv.writer(f2)
+                  while cur_block != "99999":
+                        cur_block_data = read_block(f, int(cur_block))
+                        write_data_block_to_csv(writer, cur_block_data)
+                        next_block = cur_block_data[-5:]
+                        cur_block = next_block
 
+def rm(myfile: str):
+      with open(db_file, "r+") as f:
+            # check if myfile exists
+            fcb_block_num = get_fcb_block_num(f, myfile)
+            if fcb_block_num == -1:
+                  print("File not found")
+                  return
+            fcb_block_data = read_block(f, fcb_block_num)
+            starting_block = fcb_block_data[80:85]
+            # print(starting_block, ending_block)
+            cur_block = starting_block
             while cur_block != "99999":
                   cur_block_data = read_block(f, int(cur_block))
                   next_block = cur_block_data[-5:]
-                  # print(next_block)
+                  mark_block_free(int(cur_block))
+                  write_block(f, int(cur_block), ' ' * BLOCK_SIZE)
                   cur_block = next_block
+            write_block(f, fcb_block_num, ' ' * BLOCK_SIZE)
+      print(myfile + "removed")
+
+def kill(PFSfilename: str):
+      files = glob.glob(PFSfilename + '.db*')
+      for file in files:
+            print("removing file:" + file)
+            os.remove(file)
+
 def run():
      while True:
             command = input("NoSQL> ").strip().split(' ', 1)
@@ -153,13 +195,10 @@ def main():
       open_db('test_group1.db0')
       put("movies-small.csv")
       dir()
-      get("movies-small.csv")
-      # with open("test_group1.db0") as f:
-      #       for i in range(13, 19):
-      #             read_block(f, i)
-      
-      
-
+      # get("movies-small.csv")
+      # rm("movies-small.csv")
+      dir()
+      kill("test_group1")
 
 
 if __name__ == "__main__":
