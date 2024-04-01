@@ -29,7 +29,9 @@ def open_db(db_name: str):
                   f.write('0') # 80 - 80 
                   # Initialize bitmap for free block management
                   f.seek(BLOCK_SIZE * 9)
-                  f.write('FFF8' + '0' * 1020) # first 9 blocks is for meta data and FCB
+                  # first 9 blocks is for meta data and FCB, 9-45 bitmap
+                  # each 4 blocks is for one db_file, max 9 db_file
+                  f.write(('f'*11 + '8').ljust(9216, '0')) 
 
 
 
@@ -38,7 +40,7 @@ def put(myfile: str):
             fcb_block = 0
             # check if myfile exists
             for i in range(1,9):
-                  data = util.read_block(f1, i)
+                  data = util.read_block(db_file, i)
                   if data[0] != ' ':
                         filename = data[:50].strip()
                         if filename == myfile:
@@ -91,84 +93,82 @@ def create_index_for_file(myfile: str):
       height = util.calculate_lsmt_height(myfile)
       global lsmt_index
       lsmt_index = LSMTree(height, 0.5, dbfile=db_file, myfile=myfile)
-      with open(db_file, "r+") as f:
-            # check if myfile exists
-            fcb_block_num = util.get_fcb_block_num(f, myfile)
-            # get the free block for index
-            index_block = util.get_free_block_and_set(db_file)
-            util.write_block(f, index_block, "999990".rjust(256))
-            f.seek(fcb_block_num*BLOCK_SIZE+95)
-            f.write(str(index_block).rjust(5,'0'))
-            fcb_block_data = util.read_block(f, fcb_block_num)
-            starting_block = fcb_block_data[80:85]
-            cur_block = starting_block
-            while cur_block != "99999":
-                  cur_block_data = util.read_block(f, int(cur_block))
-                  rows = [cur_block_data[i*40:(i+1)*40] for i in range(6)]
-                  for row in rows:
-                        if row[0] == ' ': continue
-                        key, value = row.split(',',1)
-                        lsmt_index.put(key, cur_block)
-                  next_block = cur_block_data[-5:]
-                  cur_block = next_block
+      # with open(db_file, "r+") as f:
+      # check if myfile exists
+      fcb_block_num = util.get_fcb_block_num(db_file, myfile)
+      # get the free block for index
+      index_block = util.get_free_block_and_set(db_file)
+      wal_block = util.get_free_block_and_set(db_file)
+      util.write_block(db_file, index_block, f"{wal_block}0".rjust(256))
+      fcb_block_data = util.read_block(db_file, fcb_block_num)
+      util.write_block(db_file, fcb_block_num, (fcb_block_data[:95] + str(index_block).rjust(5,'0')).ljust(BLOCK_SIZE))
+      starting_block = fcb_block_data[80:85]
+      cur_block = starting_block
+      while cur_block != "99999":
+            cur_block_data = util.read_block(db_file, int(cur_block))
+            rows = [cur_block_data[i*40:(i+1)*40] for i in range(6)]
+            for row in rows:
+                  if row[0] == ' ': continue
+                  key, value = row.split(',',1)
+                  lsmt_index.put(key, cur_block)
+            next_block = cur_block_data[-5:]
+            cur_block = next_block
             
       # lsmt_index.print()
 
 def dir():
-      with open(db_file, "r") as f:
-            for i in range(1, 9):
-                  fcb = util.read_block(f, i)
-                  if(fcb[0] == ' '): continue
-                  filename = fcb[:50].strip()
-                  size = fcb[50:60].strip()
-                  date = fcb[60:80].strip()
-                  print(f"{filename}     {size} bytes      {date}")
+      for i in range(1, 9):
+            fcb = util.read_block(db_file, i)
+            if(fcb[0] == ' '): continue
+            filename = fcb[:50].strip()
+            size = fcb[50:60].strip()
+            date = fcb[60:80].strip()
+            print(f"{filename}     {size} bytes      {date}")
 
 def get(myfile: str):
-      with open(db_file, "r") as f:
-            # check if myfile exists
-            fcb_block_num = util.get_fcb_block_num(f, myfile)
-            fcb_block_data = util.read_block(f, fcb_block_num)
-            starting_block = fcb_block_data[80:85]
-            cur_block = starting_block
-            with open("get-"+myfile, "w") as f2:
-                  writer = csv.writer(f2)
-                  while cur_block != "99999":
-                        cur_block_data = util.read_block(f, int(cur_block))
-                        util.write_data_block_to_csv(writer, cur_block_data)
-                        next_block = cur_block_data[-5:]
-                        cur_block = next_block
+      # check if myfile exists
+      fcb_block_num = util.get_fcb_block_num(db_file, myfile)
+      fcb_block_data = util.read_block(db_file, fcb_block_num)
+      starting_block = fcb_block_data[80:85]
+      cur_block = starting_block
+      with open("get-"+myfile, "w") as f2:
+            writer = csv.writer(f2)
+            while cur_block != "99999":
+                  cur_block_data = util.read_block(db_file, int(cur_block))
+                  util.write_data_block_to_csv(writer, cur_block_data)
+                  next_block = cur_block_data[-5:]
+                  cur_block = next_block
 
 def find(myfile: str, key: int):
       data_block, reads = lsmt_index.get(key)
-      with open(db_file, "r") as f:
-            content = util.read_block(f, int(data_block))
-            for i in range(0, util.BLOCK_SIZE-40, 40):
-                  entry = content[i:i+40]
-                  k, v = entry.split(',', 1)
-                  if int(k) == key:
-                        print(f"found entry: {entry}")
-                        print("# of blocks = " + str(reads))
-                        return
+      if data_block == "99999":
+            print(f"key {key} not found, # of blocks = {str(reads)}")
+            return
+      content = util.read_block(db_file, int(data_block))
+      for i in range(0, util.BLOCK_SIZE-40, 40):
+            entry = content[i:i+40]
+            k, v = entry.split(',', 1)
+            if int(k) == key:
+                  print(f"found entry: {entry}, # of blocks = {str(reads)}")
+                  return
 
 def rm(myfile: str):
-      with open(db_file, "r+") as f:
-            # check if myfile exists
-            fcb_block_num = util.get_fcb_block_num(f, myfile)
-            if fcb_block_num == -1:
-                  print("File not found")
-                  return
-            fcb_block_data = util.read_block(f, fcb_block_num)
-            starting_block = fcb_block_data[80:85]
-            # print(starting_block, ending_block)
-            cur_block = starting_block
-            while cur_block != "99999":
-                  cur_block_data = util.read_block(f, int(cur_block))
-                  next_block = cur_block_data[-5:]
-                  util.mark_block_free(db_file, int(cur_block))
-                  # write_block(f, int(cur_block), ' ' * BLOCK_SIZE)
-                  cur_block = next_block
-            util.write_block(f, fcb_block_num, ' ' * BLOCK_SIZE)
+      # check if myfile exists
+      fcb_block_num = util.get_fcb_block_num(db_file, myfile)
+      if fcb_block_num == -1:
+            print("File not found")
+            return
+      fcb_block_data = util.read_block(db_file, fcb_block_num)
+      starting_block = fcb_block_data[80:85]
+      # print(starting_block, ending_block)
+      cur_block = starting_block
+      while cur_block != "99999":
+            cur_block_data = util.read_block(db_file, int(cur_block))
+            next_block = cur_block_data[-5:]
+            util.mark_block_free(db_file, int(cur_block))
+            # write_block(f, int(cur_block), ' ' * BLOCK_SIZE)
+            cur_block = next_block
+      util.write_block(db_file, fcb_block_num, ' ' * BLOCK_SIZE)
       print(myfile + "removed")
 
 def kill(PFSfilename: str):
@@ -194,6 +194,9 @@ def main():
       find("movies-small.csv", 47950)
       find("movies-small.csv", 193609)
       find("movies-small.csv", 1)
+      find("movies-small.csv", 0)
+      find("movies-small.csv", 2894)
+      find("movies-small.csv", 2895)
       # kill("test_group1")
 
 

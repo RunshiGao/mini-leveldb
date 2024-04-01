@@ -28,47 +28,46 @@ class LSMTree:
             self.memtable = SkipList(self.max_lvl, self.P)
         
     def flush(self) -> None:
-        with open(self.dbfile, "r+") as f:
-            fcb_block = util.get_fcb_block_num(f, self.myfile)
-            index_block = int(util.read_block(f, fcb_block)[95:100])
-            index_block_data = util.read_block(f, index_block)
-            # print("index block data: " + index_block_data)
-            num_of_sstable = int(index_block_data[-1])
-            sstable_meta_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5,'0')
-            new_index_block_data = str(sstable_meta_block) + index_block_data[:num_of_sstable * 5] + index_block_data[(num_of_sstable + 1)* 5:-1] + str(num_of_sstable + 1)
-            # print("new: "+new_index_block_data)
-            util.write_block(f, index_block, new_index_block_data)
-            # write the metadata for SSTable at sstable_starting_block
-            # first get the kv pairs from memtable
-            all_nodes = self.memtable.get_all_nodes()
+        fcb_block = util.get_fcb_block_num(self.dbfile, self.myfile)
+        index_block = int(util.read_block(self.dbfile, fcb_block)[95:100])
+        index_block_data = util.read_block(self.dbfile, index_block)
+        # print("index block data: " + index_block_data)
+        num_of_sstable = int(index_block_data[-1])
+        sstable_meta_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5,'0')
+        new_index_block_data = str(sstable_meta_block) + index_block_data[:num_of_sstable * 5] + index_block_data[(num_of_sstable + 1)* 5:-1] + str(num_of_sstable + 1)
+        # print("new: "+new_index_block_data)
+        util.write_block(self.dbfile, index_block, new_index_block_data)
+        # write the metadata for SSTable at sstable_starting_block
+        # first get the kv pairs from memtable
+        all_nodes = self.memtable.get_all_nodes()
+        next_free_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5,'0')
+        sstable_starting_block = next_free_block
+        updated_sstable_meta_data = sstable_starting_block
+        
+        # convert to sstable after we get all nodes, 1 block can fit in 256/13 = 19 kv pairs
+        sparse_index = math.ceil(1024 / 19 / 19)
+        cnt = sparse_index
+        for i in range(19, len(all_nodes), 19):
+            nodes = [''.join(e) for e in all_nodes[i-19:i]]
+            tmp = next_free_block
             next_free_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5,'0')
-            sstable_starting_block = next_free_block
-            updated_sstable_meta_data = sstable_starting_block
-            
-            # convert to sstable after we get all nodes, 1 block can fit in 256/13 = 19 kv pairs
-            sparse_index = math.ceil(1024 / 19 / 19)
-            cnt = sparse_index
-            for i in range(19, len(all_nodes), 19):
-                nodes = [''.join(e) for e in all_nodes[i-19:i]]
-                tmp = next_free_block
-                next_free_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5,'0')
-                data = ''.join(nodes).ljust(251) + next_free_block
-                util.write_block(f, int(tmp), data)
-                if cnt == sparse_index:
-                    key, _ = all_nodes[i-19]
-                    updated_sstable_meta_data += key + tmp
-                    cnt = 0
-                cnt += 1
-            # manage last block
-            remainder = 1024 % 19
-            nodes = [''.join(e) for e in all_nodes[-remainder:]]
-            data = ''.join(nodes).ljust(251) + "99999"
-            util.write_block(f, int(next_free_block), data)
-            key, _ = all_nodes[-remainder]
-            updated_sstable_meta_data += key + next_free_block
-            updated_sstable_meta_data = updated_sstable_meta_data.ljust(256)
-            # print(f"updated ss meta of len({len(updated_sstable_meta_data)}): {updated_sstable_meta_data}" )
-            util.write_block(f, int(sstable_meta_block), updated_sstable_meta_data)
+            data = ''.join(nodes).ljust(251) + next_free_block
+            util.write_block(self.dbfile, int(tmp), data)
+            if cnt == sparse_index:
+                key, _ = all_nodes[i-19]
+                updated_sstable_meta_data += key + tmp
+                cnt = 0
+            cnt += 1
+        # manage last block
+        remainder = 1024 % 19
+        nodes = [''.join(e) for e in all_nodes[-remainder:]]
+        data = ''.join(nodes).ljust(251) + "99999"
+        util.write_block(self.dbfile, int(next_free_block), data)
+        key, _ = all_nodes[-remainder]
+        updated_sstable_meta_data += key + next_free_block
+        updated_sstable_meta_data = updated_sstable_meta_data.ljust(256)
+        # print(f"updated ss meta of len({len(updated_sstable_meta_data)}): {updated_sstable_meta_data}" )
+        util.write_block(self.dbfile, int(sstable_meta_block), updated_sstable_meta_data)
 
 
     # get the key from the db, return the data_block associated with the key, 99999 if not found
@@ -77,20 +76,20 @@ class LSMTree:
         reads = 0
         # in found in memtable, just return
         if result != "99999":
-            print("found the key in memtable, # of blocks = 0")
+            # print("found the key in memtable, # of blocks = 0")
             return result, reads
         # not found, iterate through sstable
         else:
             with open(self.dbfile, "r+") as f:
-                fcb_block = util.get_fcb_block_num(f, self.myfile)
-                index_block = util.read_block(f, int(fcb_block))[95:100]
-                index_data = util.read_block(f, int(index_block))
+                fcb_block = util.get_fcb_block_num(self.dbfile, self.myfile)
+                index_block = util.read_block(self.dbfile, int(fcb_block))[95:100]
+                index_data = util.read_block(self.dbfile, int(index_block))
                 reads = 3
                 for i in range(0, 50, 5):
                     sstable_meta_block = index_data[i:i+5]
                     if sstable_meta_block[0] == ' ':
                         break
-                    sstable_meta_data = util.read_block(f, int(sstable_meta_block))
+                    sstable_meta_data = util.read_block(self.dbfile, int(sstable_meta_block))
                     reads += 1
                     for i in range(5, util.BLOCK_SIZE - 26, 13):
                         k1 = int(sstable_meta_data[i:i+8])
@@ -104,7 +103,7 @@ class LSMTree:
                         pairs = []
                         # if in the range, scan
                         while sstable1 != sstable2:
-                            sstable_cur_block_data = util.read_block(f, int(sstable1))
+                            sstable_cur_block_data = util.read_block(self.dbfile, int(sstable1))
                             reads += 1
                             for i in range(0, 247, 13):
                                 k, v = sstable_cur_block_data[i:i+8], sstable_cur_block_data[i+8:i+13]
@@ -115,7 +114,10 @@ class LSMTree:
                         # found key
                         if pairs[pos][0] == key:
                             return pairs[pos][1], reads
+                        else:
+                            return "99999", reads
                         break
+                return "99999", reads
 
 
 
