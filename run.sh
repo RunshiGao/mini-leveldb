@@ -1,4 +1,4 @@
 #!/bin/sh
 
-rm *.db0
+rm *.db*
 python3 my_rocksdb.py 

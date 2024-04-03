@@ -4,7 +4,7 @@ import math
 import bisect
 class LSMTree:
     # constructor to initialize the LSMTree
-    def __init__(self, max_lvl=None, P=None, capacity=1024, dbfile=None, myfile=None):
+    def __init__(self, max_lvl=None, P=None, capacity=1024, dbfile=None, myfile=None, wal_block=None):
         if max_lvl != None and P != None:
             self.max_lvl = max_lvl
             self.P = P
@@ -17,8 +17,12 @@ class LSMTree:
         self.size = 0
         self.dbfile = dbfile
         self.myfile = myfile
+        self.wal_block = wal_block
+
     # put the key into the db
     def put(self, key, value) -> None:
+        # if self.size == 0:
+        #     self.create_wal()
         self.memtable.insert(key, value)
         self.size += 1
         if self.size == self.capacity:
@@ -26,16 +30,26 @@ class LSMTree:
             self.flush()
             self.size = 0
             self.memtable = SkipList(self.max_lvl, self.P)
-        
+    
+    def create_wal(self):
+        wal_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5, '0')
+        wal_starting_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5, '0')
+        util.write_block(self.dbfile, int(wal_block), wal_starting_block + '0000'.rjust(251))
+
+    def delete_wal(self):
+        return
+
     def flush(self) -> None:
         fcb_block = util.get_fcb_block_num(self.dbfile, self.myfile)
+        if fcb_block < 0:
+            return
         index_block = int(util.read_block(self.dbfile, fcb_block)[95:100])
         index_block_data = util.read_block(self.dbfile, index_block)
         # print("index block data: " + index_block_data)
-        num_of_sstable = int(index_block_data[-1])
+        num_of_sstable = int(index_block_data[-2:])
         sstable_meta_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5,'0')
-        new_index_block_data = str(sstable_meta_block) + index_block_data[:num_of_sstable * 5] + index_block_data[(num_of_sstable + 1)* 5:-1] + str(num_of_sstable + 1)
-        # print("new: "+new_index_block_data)
+        new_index_block_data = str(sstable_meta_block) + index_block_data[:num_of_sstable * 5] + index_block_data[(num_of_sstable + 1)* 5:-2] + str(num_of_sstable + 1).rjust(2,'0')
+        
         util.write_block(self.dbfile, index_block, new_index_block_data)
         # write the metadata for SSTable at sstable_starting_block
         # first get the kv pairs from memtable
@@ -74,50 +88,7 @@ class LSMTree:
     def get(self, key):
         result = self.memtable.search(key)
         reads = 0
-        # in found in memtable, just return
-        if result != "99999":
-            # print("found the key in memtable, # of blocks = 0")
-            return result, reads
-        # not found, iterate through sstable
-        else:
-            with open(self.dbfile, "r+") as f:
-                fcb_block = util.get_fcb_block_num(self.dbfile, self.myfile)
-                index_block = util.read_block(self.dbfile, int(fcb_block))[95:100]
-                index_data = util.read_block(self.dbfile, int(index_block))
-                reads = 3
-                for i in range(0, 50, 5):
-                    sstable_meta_block = index_data[i:i+5]
-                    if sstable_meta_block[0] == ' ':
-                        break
-                    sstable_meta_data = util.read_block(self.dbfile, int(sstable_meta_block))
-                    reads += 1
-                    for i in range(5, util.BLOCK_SIZE - 26, 13):
-                        k1 = int(sstable_meta_data[i:i+8])
-                        sstable1 = sstable_meta_data[i+8:i+13]
-                        k2 = int(sstable_meta_data[i+13:i+21])
-                        sstable2 = sstable_meta_data[i+21:i+26]
-                        # if key not in range, skip this sstable
-                        if not k1 <= key <= k2:
-                            continue
-                        
-                        pairs = []
-                        # if in the range, scan
-                        while sstable1 != sstable2:
-                            sstable_cur_block_data = util.read_block(self.dbfile, int(sstable1))
-                            reads += 1
-                            for i in range(0, 247, 13):
-                                k, v = sstable_cur_block_data[i:i+8], sstable_cur_block_data[i+8:i+13]
-                                pairs.append((int(k),v))
-                            sstable1 = sstable_cur_block_data[-5:]
-                        pos = bisect.bisect_left(pairs, key, key=lambda x: x[0])
-                        # print(f"pos:{pos}, value: {pairs[pos]}")
-                        # found key
-                        if pairs[pos][0] == key:
-                            return pairs[pos][1], reads
-                        else:
-                            return "99999", reads
-                        break
-                return "99999", reads
+        return result, reads
 
 
 

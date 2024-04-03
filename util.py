@@ -1,11 +1,29 @@
 import math
 import csv
+import os
+import bisect
 
 BLOCK_SIZE = 256  # bytes
 INITIAL_SIZE = 1024 * 1024  # 1 MByte
 METADATA_SIZE = 1  # block
 
+def check_need_extend(db_file):
+      cnt = 0
+      for x in range(9,45,4):
+            cnt += 1
+            data = read_block(db_file, x + 3)
+            if data[-1] == '0':
+                  break
+            elif data[-1] == 'f':
+                  if os.path.exists(db_file[:-1] + str(cnt)):
+                        continue
+                  else:
+                        return True
+      return False
+
 def get_free_block_and_set(db_file):
+      if check_need_extend(db_file):
+            extend(db_file)
       for x in range(9,45):
             offset = (x - 9) * 1024
             data = read_block(db_file, x)
@@ -16,6 +34,57 @@ def get_free_block_and_set(db_file):
                         updated_bitmap_hex = hex(int(updated_bitmap_binary, 2))[2:].zfill(BLOCK_SIZE)
                         write_block(db_file, x, updated_bitmap_hex)
                         return i + offset
+
+def extend(db_file):
+      print("extending pfs file")
+      # first modify the metadata in db0
+      meta_data = read_block(db_file, 0)
+      total_size = str(int(meta_data[50:60].strip()) + INITIAL_SIZE).ljust(10)
+      num_pfs = int(meta_data[60:70].strip()) + 1
+      updated = meta_data[:50] + total_size + str(num_pfs).ljust(10) + meta_data[70:]
+      write_block(db_file, 0, updated)
+      with open(db_file[:-1] + str(num_pfs - 1), 'w') as f:
+            f.write(' ' * INITIAL_SIZE)
+
+def get_from_sstable(dbfile, myfile, key):
+      fcb_block = get_fcb_block_num(dbfile, myfile)
+      if fcb_block == -1:
+            return "99999", 0
+      index_block = read_block(dbfile, int(fcb_block))[95:100]
+      index_data = read_block(dbfile, int(index_block))
+      reads = 3
+      for i in range(0, 250, 5):
+            sstable_meta_block = index_data[i:i+5]
+            if sstable_meta_block[0] == ' ':
+                  break
+            sstable_meta_data = read_block(dbfile, int(sstable_meta_block))
+            reads += 1
+            for i in range(5, BLOCK_SIZE - 26, 13):
+                  k1 = int(sstable_meta_data[i:i+8])
+                  sstable1 = sstable_meta_data[i+8:i+13]
+                  k2 = int(sstable_meta_data[i+13:i+21])
+                  sstable2 = sstable_meta_data[i+21:i+26]
+                  # if key not in range, skip this sstable
+                  if not k1 <= key <= k2:
+                        continue
+                  
+                  pairs = []
+                  # if in the range, scan
+                  while sstable1 != sstable2:
+                        sstable_cur_block_data = read_block(dbfile, int(sstable1))
+                        reads += 1
+                        for i in range(0, 247, 13):
+                              k, v = sstable_cur_block_data[i:i+8], sstable_cur_block_data[i+8:i+13]
+                              pairs.append((int(k),v))
+                        sstable1 = sstable_cur_block_data[-5:]
+                  pos = bisect.bisect_left(pairs, key, key=lambda x: x[0])
+                  # print(f"pos:{pos}, value: {pairs[pos]}")
+                  # found key
+                  if pairs[pos][0] == key:
+                        return pairs[pos][1], reads
+                  else:
+                        return "99999", reads
+      return "99999", reads
 
 def mark_block_free(db_file, block_num):
       data = ''.join([read_block(db_file, i) for i in range(9, 13)])
@@ -55,8 +124,6 @@ def get_fcb_block_num(db_file, myfile):
                   filename = data[:50].strip()
                   if filename == myfile:
                         return i
-            else:
-                  break
       return -1
 
 def calculate_lsmt_height(myfile: str):

@@ -36,70 +36,76 @@ def open_db(db_name: str):
 
 
 def put(myfile: str):
-      with open(db_file, "r+") as f1:
-            fcb_block = 0
-            # check if myfile exists
-            for i in range(1,9):
-                  data = util.read_block(db_file, i)
-                  if data[0] != ' ':
-                        filename = data[:50].strip()
-                        if filename == myfile:
-                              return
-                  else:
-                        # insert new FCB
-                        fcb_block = i
-                        f1.seek(i * BLOCK_SIZE)
-                        f1.write(myfile.ljust(50))
-                        f1.write(str(os.path.getsize(myfile)).ljust(10))
-                        f1.write(str(datetime.datetime.now())[:-7].ljust(20))
-                        break
+      fcb_block = 0
+      fcb_block_data = ""
+      # check if myfile exists
+      for i in range(1,9):
+            data = util.read_block(db_file, i)
+            if data[0] != ' ':
+                  filename = data[:50].strip()
+                  if filename == myfile:
+                        return
+            else:
+                  # insert new FCB
+                  fcb_block = i
+                  fcb_block_data += myfile.ljust(50)
+                  fcb_block_data += str(os.path.getsize(myfile)).ljust(10)
+                  fcb_block_data += str(datetime.datetime.now())[:-7].ljust(20)
+                  break
 
-            free_block = util.get_free_block_and_set(db_file)
-            f1.write(str(free_block).rjust(5,'0'))
-            f1.seek(free_block * BLOCK_SIZE)
-            block_used = 1
-            with open(myfile, "r", encoding="latin-1") as f2:
-                  reader = csv.reader(f2, delimiter="\t")
-                  next(reader, None)
-                  cnt = 0
-                  for line in reader:
-                        line = ''.join(str(e) for e in line)
-                        line = util.remove_two_byte_characters(line)
-                        f1.write(line)
-                        cnt += 1
-                        if cnt == 6:
-                              # a block is full, update bitmap
-                              cnt = 0
-                              f1.write(''.ljust(BLOCK_SIZE - 240 - 5))
-                              free_block = util.get_free_block_and_set(db_file)
-                              # print("got free block:", free_block)
-                              f1.write(str(free_block).rjust(5,'0'))
-                              block_used += 1
-                  # manage last block
-                  f1.write('99999'.rjust(256 - cnt * 40))
-            # print("last free block:", free_block)
-            # update metadata, # of KV tables
-            f1.seek(80)
-            f1.write('1')
-            # update ending block and number of blocks used
-            f1.seek(fcb_block*BLOCK_SIZE+85)
-            f1.write(str(free_block).rjust(5,'0'))
-            # print("block used:", block_used)
-            f1.write(str(block_used).rjust(5,'0'))
+      free_block = util.get_free_block_and_set(db_file)
+      fcb_block_data += str(free_block).rjust(5,'0')
+      block_used = 1
+      with open(myfile, "r", encoding="latin-1") as f2:
+            reader = csv.reader(f2, delimiter="\t")
+            next(reader, None)
+            cnt = 0
+            lines = ""
+            for line in reader:
+                  line = ''.join(str(e) for e in line)
+                  line = util.remove_two_byte_characters(line)
+                  lines += line
+                  cnt += 1
+                  if cnt == 6:
+                        # a block is full, update bitmap
+                        cnt = 0
+                        lines = lines.ljust(BLOCK_SIZE - 5)
+                        # f1.write(''.ljust(BLOCK_SIZE - 240 - 5))
+                        tmp = free_block
+                        free_block = util.get_free_block_and_set(db_file)
+                        # print("got free block:", free_block)
+                        lines += str(free_block).rjust(5,'0')
+                        util.write_block(db_file, tmp, lines)
+                        block_used += 1
+                        lines = ""
+            # manage last block
+            # f1.write('99999'.rjust(256 - cnt * 40))
+            lines += '99999'.rjust(256 - cnt * 40)
+            util.write_block(db_file, free_block, lines)
+      # print("last free block:", free_block)
+      # update metadata, # of KV tables
+      meta_data = util.read_block(db_file, 0)
+      num_tables = meta_data[80]
+      update = meta_data[:80] + str(int(num_tables) + 1) + meta_data[81:]
+      util.write_block(db_file, 0, update)
+      # update ending block and number of blocks used
+      fcb_block_data += str(free_block).rjust(5,'0')
+      fcb_block_data += str(block_used).rjust(5,'0')
+      util.write_block(db_file, int(fcb_block), fcb_block_data)
             
       create_index_for_file(myfile)
 
 def create_index_for_file(myfile: str):
       height = util.calculate_lsmt_height(myfile)
-      global lsmt_index
-      lsmt_index = LSMTree(height, 0.5, dbfile=db_file, myfile=myfile)
-      # with open(db_file, "r+") as f:
+      
       # check if myfile exists
       fcb_block_num = util.get_fcb_block_num(db_file, myfile)
       # get the free block for index
       index_block = util.get_free_block_and_set(db_file)
-      wal_block = util.get_free_block_and_set(db_file)
-      util.write_block(db_file, index_block, f"{wal_block}0".rjust(256))
+      
+      lsmt_index = LSMTree(height, 0.5, dbfile=db_file, myfile=myfile)
+      index_map[myfile] = lsmt_index
+      util.write_block(db_file, index_block, "9999900".rjust(256))
       fcb_block_data = util.read_block(db_file, fcb_block_num)
       util.write_block(db_file, fcb_block_num, (fcb_block_data[:95] + str(index_block).rjust(5,'0')).ljust(BLOCK_SIZE))
       starting_block = fcb_block_data[80:85]
@@ -140,7 +146,14 @@ def get(myfile: str):
                   cur_block = next_block
 
 def find(myfile: str, key: int):
-      data_block, reads = lsmt_index.get(key)
+      lsmt_index = None
+      if myfile in index_map:
+            lsmt_index = index_map[myfile]
+      data_block, reads = "99999", 0
+      if lsmt_index is not None:
+            data_block, reads = lsmt_index.get(key)
+      else:
+            data_block, reads = util.get_from_sstable(db_file, myfile, key)
       if data_block == "99999":
             print(f"key {key} not found, # of blocks = {str(reads)}")
             return
@@ -159,6 +172,7 @@ def rm(myfile: str):
             print("File not found")
             return
       fcb_block_data = util.read_block(db_file, fcb_block_num)
+      # removing data blocks
       starting_block = fcb_block_data[80:85]
       # print(starting_block, ending_block)
       cur_block = starting_block
@@ -166,10 +180,27 @@ def rm(myfile: str):
             cur_block_data = util.read_block(db_file, int(cur_block))
             next_block = cur_block_data[-5:]
             util.mark_block_free(db_file, int(cur_block))
-            # write_block(f, int(cur_block), ' ' * BLOCK_SIZE)
             cur_block = next_block
       util.write_block(db_file, fcb_block_num, ' ' * BLOCK_SIZE)
-      print(myfile + "removed")
+      print(myfile + " removed")
+      # start removing index
+      if len(index_map) > 0:
+            del index_map[myfile]
+      index_block = fcb_block_data[95:100]
+      index_data = util.read_block(db_file, int(index_block))
+      for i in range(0, 250, 5):
+            sstable_meta_block = index_data[i:i+5]
+            if sstable_meta_block[0] == ' ':
+                  break
+            util.mark_block_free(db_file, int(sstable_meta_block))
+            sstable_meta_data = util.read_block(db_file, int(sstable_meta_block))
+            cur_block = sstable_meta_data[:5]
+            while cur_block != "99999":
+                  cur_block_data = util.read_block(db_file, int(cur_block))
+                  next_block = cur_block_data[-5:]
+                  util.mark_block_free(db_file, int(cur_block))
+                  cur_block = next_block
+      util.mark_block_free(db_file, int(index_block))
 
 def kill(PFSfilename: str):
       files = glob.glob(PFSfilename + '.db*')
@@ -183,21 +214,53 @@ def run():
             action = command[0]
             if action == 'open':
                   db_name = command[1] + '.db0'
+                  open_db(db_name)
+            elif action == 'put':
+                  myfile = command[1]
+                  put(myfile)
+            elif action == 'get':
+                  myfile = command[1]
+                  get(myfile)
+            elif action == 'rm':
+                  myfile = command[1]
+                  rm(myfile)
+            elif action == 'dir':
+                  dir()
+            elif action == 'find':
+                  list = command[1].split('.')
+                  myfile = ".".join(list[:2])
+                  key = list[-1]
+                  find(myfile, int(key))
+            elif action == 'kill':
+                  PFSfile = command[1]
+                  kill(PFSfile)
+            elif action == 'quit':
+                  for filename, lsmt_index in index_map.items():
+                        if lsmt_index:
+                              print(f"flushing memtable of {filename} to disk before quit")
+                              lsmt_index.flush()
+                  break
             
 def main():
-      open_db('test_group1.db0')
-      put("movies-small.csv")
-      dir()
+      global index_map
+      index_map = {}
+      micro = "movies-micro.csv"
+      small = "movies-small.csv"
+      big = "movies-large.csv"
+      # open_db('test_group1.db0')
+      # put(small)
+      # find(small, 193609)
+      # put(micro)
+      # find(small, 193609)
+      # dir()
       # get("movies-small.csv")
       # rm("movies-small.csv")
-      # dir()
-      find("movies-small.csv", 47950)
-      find("movies-small.csv", 193609)
-      find("movies-small.csv", 1)
-      find("movies-small.csv", 0)
-      find("movies-small.csv", 2894)
-      find("movies-small.csv", 2895)
+      # find("movies-small.csv", 193609)
+      
       # kill("test_group1")
+      # put(big)
+      # find(micro,1)
+      run()
 
 
 if __name__ == "__main__":
