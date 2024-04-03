@@ -162,7 +162,9 @@ def find(myfile: str, key: int):
       data_block, reads = "99999", 0
       if lsmt_index is not None:
             data_block, reads = lsmt_index.get(key)
-      # if cannot find in memory, find in disk
+            # if cannot find in memory, find in disk
+            if data_block == "99999":
+                  data_block, reads = util.get_from_sstable(db_file, myfile, key)
       else:
             data_block, reads = util.get_from_sstable(db_file, myfile, key)
       if data_block == "99999":
