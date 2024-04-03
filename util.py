@@ -62,6 +62,8 @@ def get_from_sstable(dbfile, myfile, key):
             for i in range(5, BLOCK_SIZE - 26, 13):
                   k1 = int(sstable_meta_data[i:i+8])
                   sstable1 = sstable_meta_data[i+8:i+13]
+                  if(sstable_meta_data[i+13] == " "):
+                        break
                   k2 = int(sstable_meta_data[i+13:i+21])
                   sstable2 = sstable_meta_data[i+21:i+26]
                   # if key not in range, skip this sstable
