@@ -21,8 +21,6 @@ class LSMTree:
 
     # put the key into the db
     def put(self, key, value) -> None:
-        # if self.size == 0:
-        #     self.create_wal()
         self.memtable.insert(key, value)
         self.size += 1
         if self.size == self.capacity:
@@ -31,21 +29,22 @@ class LSMTree:
             self.size = 0
             self.memtable = SkipList(self.max_lvl, self.P)
     
-    def create_wal(self):
-        wal_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5, '0')
-        wal_starting_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5, '0')
-        util.write_block(self.dbfile, int(wal_block), wal_starting_block + '0000'.rjust(251))
+    # def create_wal(self):
+    #     wal_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5, '0')
+    #     wal_starting_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5, '0')
+    #     util.write_block(self.dbfile, int(wal_block), wal_starting_block + '0000'.rjust(251))
 
-    def delete_wal(self):
-        return
+    # def delete_wal(self):
+    #     return
 
     def flush(self) -> None:
+        # first read index info
         fcb_block = util.get_fcb_block_num(self.dbfile, self.myfile)
         if fcb_block < 0:
             return
         index_block = int(util.read_block(self.dbfile, fcb_block)[95:100])
         index_block_data = util.read_block(self.dbfile, index_block)
-        # print("index block data: " + index_block_data)
+        # add a new sstable and update num of sstable
         num_of_sstable = int(index_block_data[-2:])
         sstable_meta_block = str(util.get_free_block_and_set(self.dbfile)).rjust(5,'0')
         new_index_block_data = str(sstable_meta_block) + index_block_data[:num_of_sstable * 5] + index_block_data[(num_of_sstable + 1)* 5:-2] + str(num_of_sstable + 1).rjust(2,'0')
@@ -90,22 +89,8 @@ class LSMTree:
         reads = 0
         return result, reads
 
-
-
-    
     # display the index structure
     def print(self):
         self.memtable.displayList()
 
-    # Function to read a text file and insert keys into the memtable
-    def insert_keys_from_file(self, filename):
-        # open the file
-        with open(filename, 'r') as file:
-            # read a line
-            for line in file:
-                # Assuming keys are separated by comma
-                keys = line.strip().split(',')  
-                # insert each key
-                for key in keys:
-                    self.put(key)
 

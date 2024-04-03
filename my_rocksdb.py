@@ -56,6 +56,7 @@ def put(myfile: str):
       free_block = util.get_free_block_and_set(db_file)
       fcb_block_data += str(free_block).rjust(5,'0')
       block_used = 1
+      # start reading the input data file
       with open(myfile, "r", encoding="latin-1") as f2:
             reader = csv.reader(f2, delimiter="\t")
             next(reader, None)
@@ -70,19 +71,17 @@ def put(myfile: str):
                         # a block is full, update bitmap
                         cnt = 0
                         lines = lines.ljust(BLOCK_SIZE - 5)
-                        # f1.write(''.ljust(BLOCK_SIZE - 240 - 5))
                         tmp = free_block
                         free_block = util.get_free_block_and_set(db_file)
-                        # print("got free block:", free_block)
+                        # last 5 bytes is for the pointer to next data block
                         lines += str(free_block).rjust(5,'0')
                         util.write_block(db_file, tmp, lines)
                         block_used += 1
                         lines = ""
             # manage last block
-            # f1.write('99999'.rjust(256 - cnt * 40))
             lines += '99999'.rjust(256 - cnt * 40)
             util.write_block(db_file, free_block, lines)
-      # print("last free block:", free_block)
+      
       # update metadata, # of KV tables
       meta_data = util.read_block(db_file, 0)
       num_tables = meta_data[80]
@@ -92,30 +91,36 @@ def put(myfile: str):
       fcb_block_data += str(free_block).rjust(5,'0')
       fcb_block_data += str(block_used).rjust(5,'0')
       util.write_block(db_file, int(fcb_block), fcb_block_data)
-            
+      # after data input finished, create index for data file
       create_index_for_file(myfile)
 
 def create_index_for_file(myfile: str):
+      # calculate the max height for lsmt
       height = util.calculate_lsmt_height(myfile)
       
       # check if myfile exists
       fcb_block_num = util.get_fcb_block_num(db_file, myfile)
       # get the free block for index
       index_block = util.get_free_block_and_set(db_file)
-      
+      # create lsmt index
       lsmt_index = LSMTree(height, 0.5, dbfile=db_file, myfile=myfile)
       index_map[myfile] = lsmt_index
+      # initialize index block
       util.write_block(db_file, index_block, "9999900".rjust(256))
+      # update fcb for the file, add index block pointer
       fcb_block_data = util.read_block(db_file, fcb_block_num)
       util.write_block(db_file, fcb_block_num, (fcb_block_data[:95] + str(index_block).rjust(5,'0')).ljust(BLOCK_SIZE))
+      # traverse the data blocks to create index
       starting_block = fcb_block_data[80:85]
       cur_block = starting_block
       while cur_block != "99999":
+            # read the data blocks and split into rows
             cur_block_data = util.read_block(db_file, int(cur_block))
             rows = [cur_block_data[i*40:(i+1)*40] for i in range(6)]
             for row in rows:
                   if row[0] == ' ': continue
                   key, value = row.split(',',1)
+                  # insert into the index
                   lsmt_index.put(key, cur_block)
             next_block = cur_block_data[-5:]
             cur_block = next_block
@@ -123,6 +128,7 @@ def create_index_for_file(myfile: str):
       # lsmt_index.print()
 
 def dir():
+      # reads the fcb blocks 1-8
       for i in range(1, 9):
             fcb = util.read_block(db_file, i)
             if(fcb[0] == ' '): continue
@@ -134,7 +140,10 @@ def dir():
 def get(myfile: str):
       # check if myfile exists
       fcb_block_num = util.get_fcb_block_num(db_file, myfile)
+      if fcb_block_num == -1:
+            return
       fcb_block_data = util.read_block(db_file, fcb_block_num)
+      # traverse the data blocks to get the data and write back
       starting_block = fcb_block_data[80:85]
       cur_block = starting_block
       with open("get-"+myfile, "w") as f2:
@@ -146,17 +155,20 @@ def get(myfile: str):
                   cur_block = next_block
 
 def find(myfile: str, key: int):
+      # first search in memory
       lsmt_index = None
       if myfile in index_map:
             lsmt_index = index_map[myfile]
       data_block, reads = "99999", 0
       if lsmt_index is not None:
             data_block, reads = lsmt_index.get(key)
+      # if cannot find in memory, find in disk
       else:
             data_block, reads = util.get_from_sstable(db_file, myfile, key)
       if data_block == "99999":
             print(f"key {key} not found, # of blocks = {str(reads)}")
             return
+      # found the data block, read out
       content = util.read_block(db_file, int(data_block))
       for i in range(0, util.BLOCK_SIZE-40, 40):
             entry = content[i:i+40]
