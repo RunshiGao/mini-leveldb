@@ -5,8 +5,9 @@ This project implements a simple NoSQL database system with a Log-Structured Mer
 ## Design
 Block size default 256 Bytes.  First block is metadata. Block 1-8 is for fcb.  
 For data block, using linked allocation. For index, using indexed allocation.  
-For sstable, optimized by sparse index to reduce block reads.
+For sstable, optimized by sparse index to reduce block reads.  
 
+![alt text](image.png)
 ## Author
 Runshi Gao(002793874)  
 Yueyan Li(002190756)
@@ -41,3 +42,4 @@ Then you will be able to input commands
 * Maximum 50 sstables, which is around 2MB file
 * Assume on integer keys
 * No Write-Ahead-Log so no crash recovery
+* No log compactions for now, which means the size scales
